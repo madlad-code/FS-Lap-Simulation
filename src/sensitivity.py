@@ -1,8 +1,8 @@
 """
 fs_lap_sim.sensitivity
-Parametric sensitivity analysis: how much does each parameter move lap time?
+Parametrisk känslighetsanalys: hur mycket påverkar varje parameter varvtiden?
 
-Usage:
+Användning:
     python sensitivity.py --track fsg --param mass --range 180,260,10
     python sensitivity.py --track fsg --sweep all
 """
@@ -31,11 +31,13 @@ SWEEP_PARAMS = {
 
 
 def run_baseline(car: VehicleParams, x, y) -> float:
+    """Kör simuleringen med basinställningar."""
     return LapSimulator(car).run(x, y)["lap_time_s"]
 
 
 def sweep_param(param: str, lo: float, hi: float, steps: int,
                 base_car: VehicleParams, x, y) -> list[tuple[float, float]]:
+    """Sveper en parameter över ett intervall och samlar in varvtider."""
     results = []
     for val in np.linspace(lo, hi, steps):
         car = deepcopy(base_car)
@@ -47,60 +49,68 @@ def sweep_param(param: str, lo: float, hi: float, steps: int,
 
 def print_sensitivity_table(param: str, data: list[tuple[float, float]],
                              baseline: float, unit: str) -> None:
+    """Skriver ut en tabell över känslighetsanalysen för en parameter."""
     print(f"\n  ── {param} [{unit}] ──")
-    print(f"  {'value':>10}  {'lap (s)':>8}  {'delta (s)':>10}  {'delta (%)':>10}")
+    print(f"  {'värde':>10}  {'varv (s)':>8}  {'delta (s)':>10}  {'delta (%)':>10}")
     print(f"  {'─'*44}")
     for val, t in data:
         delta = t - baseline
         pct = 100 * delta / baseline
-        marker = " ←base" if abs(delta) < 0.01 else ""
+        marker = " ←bas" if abs(delta) < 0.01 else ""
         print(f"  {val:>10.3f}  {t:>8.3f}  {delta:>+10.3f}  {pct:>+9.2f}%{marker}")
 
 
 def sweep_all(base_car: VehicleParams, x, y) -> None:
+    """
+    Kör en omfattande känslighetsanalys över alla definierade parametrar.
+    Rankar parametrar efter deras totala inverkan på varvtiden.
+    """
     baseline = run_baseline(base_car, x, y)
     mins = int(baseline // 60)
     secs = baseline % 60
-    print(f"\n  Baseline: {mins}:{secs:06.3f}  ({baseline:.3f} s)")
+    print(f"\n  Baslinje: {mins}:{secs:06.3f}  ({baseline:.3f} s)")
 
     sensitivities = []
     for param, (lo, hi, steps, unit) in SWEEP_PARAMS.items():
+        # Svep parametern genom dess intervall
         data = sweep_param(param, lo, hi, steps, base_car, x, y)
-        # sensitivity = total lap time variation across range
+        
+        # Beräkna inverkan: max varvtid - min varvtid över intervallet
         times = [t for _, t in data]
         spread = max(times) - min(times)
         sensitivities.append((param, spread, unit, data))
 
-    # Sort by impact
+    # Sortera så den mest inflytelserika parametern hamnar först
     sensitivities.sort(key=lambda x: x[1], reverse=True)
 
-    print(f"\n  SENSITIVITY RANKING (lap time range across sweep)")
-    print(f"  {'parameter':30}  {'impact (s)':>10}  {'unit':>6}")
+    print(f"\n  KÄNSLIGHETSRANKNING (Total varvtidsvariation över svep)")
+    print(f"  {'parameter':30}  {'inverkan (s)':>12}  {'enhet':>6}")
     print(f"  {'─'*50}")
     for param, spread, unit, _ in sensitivities:
+        # Visuell indikator (stapel) för inverkan
         bar = "█" * int(spread / 0.05)
-        print(f"  {param:30}  {spread:>+10.3f}  {unit:>6}  {bar}")
+        print(f"  {param:30}  {spread:>+12.3f}  {unit:>6}  {bar}")
 
+    # Skriv ut detaljerade tabeller
     print()
     for param, spread, unit, data in sensitivities:
         print_sensitivity_table(param, data, baseline, unit)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="FS Lap Sim — Sensitivity Analysis")
+    parser = argparse.ArgumentParser(description="FS Lap Sim — Känslighetsanalys")
     parser.add_argument("--track", default="fsg")
-    parser.add_argument("--sweep", default="all", help="all or param name")
-    parser.add_argument("--range", default=None, help="lo,hi,steps  (only for single param)")
+    parser.add_argument("--sweep", default="all", help="all eller parameternamn")
+    parser.add_argument("--range", default=None, help="lo,hi,steps (endast för enskild parameter)")
     args = parser.parse_args()
 
     car = VehicleParams()
     if Path(args.track).exists():
-        from simulator import load_track_csv
         x, y = load_track_csv(args.track)
     else:
         x, y = generate_track(args.track)
 
-    print(f"\n  Track: {args.track}  |  Car: {car.mass_kg} kg / {car.peak_power_kw} kW")
+    print(f"\n  Bana: {args.track}  |  Bil: {car.mass_kg} kg / {car.peak_power_kw} kW")
 
     if args.sweep == "all":
         sweep_all(car, x, y)
@@ -112,7 +122,7 @@ def main():
         elif param in SWEEP_PARAMS:
             lo, hi, steps, _ = SWEEP_PARAMS[param]
         else:
-            print(f"Unknown param: {param}. Use --sweep all or one of: {list(SWEEP_PARAMS)}")
+            print(f"Okänd parameter: {param}. Använd --sweep all eller en av: {list(SWEEP_PARAMS)}")
             return
 
         baseline = run_baseline(car, x, y)

@@ -1,17 +1,17 @@
 """
 fs_lap_sim.simulator
-Quasi-steady-state lap time simulation.
-Point mass model — accurate enough for FS track analysis.
+Quasi-steady-state varvtidssimulering.
+Punktmassemodell — tillräckligt noggrann för FS-bananalys.
 
-Method:
-  1. Parse track from GPS/cones or parametric definition.
-  2. Compute local curvature κ(s).
-  3. Find max speed at each point from lateral grip limit.
-  4. Forward-pass: limit acceleration from traction.
-  5. Backward-pass: limit deceleration from braking.
-  6. Integrate time, energy, and forces.
+Metod:
+  1. Parsa bana från GPS/koner eller parametrisk definition.
+  2. Beräkna lokal krökning κ(s).
+  3. Hitta maxfart vid varje punkt utifrån lateral greppgräns.
+  4. Forward-pass: begränsa acceleration utifrån drivkraft.
+  5. Backward-pass: begränsa deacceleration utifrån bromsförmåga.
+  6. Integrera tid, energi och krafter.
 
-Usage:
+Användning:
     python simulator.py --track data/fsg_endurance.csv --car configs/default.json
 """
 
@@ -25,12 +25,12 @@ import numpy as np
 from vehicle import VehicleParams, TireModel
 
 
-# ── TRACK ────────────────────────────────────────────────────────────────────
+# ── BANA ─────────────────────────────────────────────────────────────────────
 
 def load_track_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
     """
-    Load track from CSV with columns: x,y (meters, cartesian).
-    Returns (x, y) arrays.
+    Ladda bana från CSV med kolumner: x,y (meter, kartesiskt).
+    Returnerar (x, y) arrayer.
     """
     data = np.loadtxt(path, delimiter=",", skiprows=1)
     return data[:, 0], data[:, 1]
@@ -38,7 +38,7 @@ def load_track_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
 
 def generate_track(name: str) -> tuple[np.ndarray, np.ndarray]:
     """
-    Built-in parametric tracks for testing.
+    Inbyggda parametriska banor för testning.
     """
     t = np.linspace(0, 2 * np.pi, 500, endpoint=False)
 
@@ -49,23 +49,23 @@ def generate_track(name: str) -> tuple[np.ndarray, np.ndarray]:
         x = 40 * np.sin(t)
         y = 40 * np.sin(t) * np.cos(t)
     elif name == "fsg":
-        # Approximate FSG endurance layout (not exact)
+        # Approximativ FSG endurance-layout
         x = (60 * np.cos(t) + 20 * np.cos(2 * t))
         y = (40 * np.sin(t) + 15 * np.sin(3 * t))
     elif name == "skidpad":
-        # FS skid pad: two circles of radius 9.125 m
+        # FS skid pad: två cirklar med radie 9.125 m
         half = len(t) // 2
         x = np.concatenate([9.125 * np.cos(t[:half]), 9.125 * np.cos(t[half:]) + 18.25])
         y = np.concatenate([9.125 * np.sin(t[:half]), 9.125 * np.sin(t[half:])])
     else:
-        raise ValueError(f"Unknown track: {name}")
+        raise ValueError(f"Okänd bana: {name}")
 
     return x, y
 
 
 def compute_curvature(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    Compute arc-length s and curvature κ at each point.
+    Beräkna båglängd s och krökning κ vid varje punkt.
     κ = |x'y'' - y'x''| / (x'² + y'²)^(3/2)
     """
     dx = np.gradient(x)
@@ -83,26 +83,32 @@ def compute_curvature(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndar
     return s, kappa
 
 
-# ── SOLVER ────────────────────────────────────────────────────────────────────
+# ── LÖSARE ────────────────────────────────────────────────────────────────────
 
 class LapSimulator:
+    """
+    Simuleringens huvudmotor.
+    Använder en Quasi-Steady-State (QSS) metod för att hitta minsta varvtid.
+    """
     def __init__(self, car: VehicleParams):
         self.car = car
 
     def v_corner_max(self, kappa: np.ndarray) -> np.ndarray:
         """
-        Maximum speed from lateral grip at each point.
-        v = sqrt(a_lat_max / κ)
-        κ < 1e-4 → effectively straight → cap at 80 m/s.
+        Beräknar maximal möjlig hastighet vid varje punkt på banan
+        baserat enbart på lateralt grepp (greppgränsen).
+        
+        v = sqrt(a_lat_max / κ), där κ är krökningen.
         """
         car = self.car
         v_max = np.zeros_like(kappa)
         for i, k in enumerate(kappa):
             if k < 1e-4:
+                # Praktiskt taget en raksträcka
                 v_max[i] = 80.0
             else:
-                # Iterative: a_lat depends on v (aero), solve approximately
-                # Initial guess without aero
+                # Iterativ lösare: lateralt grepp beror på hastighet (pga aero downforce),
+                # så vi löser för v tills det stabiliseras.
                 v0 = np.sqrt(car.max_lateral_accel_ms2(0) / k)
                 for _ in range(5):
                     a_lat = car.max_lateral_accel_ms2(v0)
@@ -111,39 +117,48 @@ class LapSimulator:
         return v_max
 
     def run(self, x: np.ndarray, y: np.ndarray) -> dict:
+        """
+        Kör den fullständiga varvtidssimuleringen med forward och backward passes.
+        """
         car = self.car
         s, kappa = compute_curvature(x, y)
         n = len(s)
-        ds = np.diff(s, append=s[-1] - s[-2])  # segment lengths
+        ds = np.diff(s, append=s[-1] - s[-2])  # Avstånd mellan punkter
 
+        # Beräkna det absoluta taket för hastighet baserat på kurvor
         v_limit = self.v_corner_max(kappa)
 
-        # ── Forward pass (Acceleration: Beräkna maxfart utifrån grepp och effekt)
+        # ── Forward pass (Accelerations-pass)
+        # Beräknar hur snabbt bilen kan köra givet dess effekt och drivgrepp.
         v = np.zeros(n)
-        v[0] = min(v_limit[0], 5.0)  # Startfart (t.ex. från stillastående)
+        v[0] = min(v_limit[0], 5.0)  # Anta en låg startfart (t.ex. ut ur en kurva)
 
         for i in range(1, n):
             seg = ds[i - 1]
-            f_drive = car.max_traction_n(v[i - 1]) # Drivkraft begränsad av motor/däck
+            f_drive = car.max_traction_n(v[i - 1]) # Motor/däck greppgräns
             f_drag = car.drag_n(v[i - 1])           # Luftmotstånd
             f_net = f_drive - f_drag
-            a = f_net / car.mass_kg                 # F = ma => a = F/m
-            # Beräkna ny fart via v^2 = u^2 + 2as
+            a = f_net / car.mass_kg                 # Newtons andra lag: F = ma
+            
+            # v^2 = u^2 + 2as => Beräkna hastighet vid nästa punkt
             v_new = np.sqrt(max(v[i - 1] ** 2 + 2 * a * seg, 0.01))
-            v[i] = min(v_new, v_limit[i])           # Begränsa till kurvtagningsförmåga
+            v[i] = min(v_new, v_limit[i])           # Kan inte överskrida kurvgränsen
 
-        # ── Backward pass (Braking: Justera farten bakåt för att klara inbromsningar)
+        # ── Backward pass (Broms-pass)
+        # Justerar hastighetsprofilen för att säkerställa att bilen kan sakta ner inför kurvor.
         for i in range(n - 2, -1, -1):
             seg = ds[i]
-            f_brake = car.max_brake_force_n         # Max bromskraft
+            f_brake = car.max_brake_force_n         # Mekanisk bromsgräns
             f_drag = car.drag_n(v[i + 1])           # Luftmotstånd hjälper till vid inbromsning
             f_net_brake = f_brake + f_drag
             a_brake = f_net_brake / car.mass_kg
-            # Beräkna tänkbar ingångsfart inför nästa punkt
+            
+            # Beräkna vad ingångshastigheten måste vara för att nå nästa punkts hastighet
             v_back = np.sqrt(max(v[i + 1] ** 2 + 2 * a_brake * seg, 0.01))
-            v[i] = min(v[i], v_back, v_limit[i])    # Välj lägsta farten för säkerhet
+            v[i] = min(v[i], v_back, v_limit[i])    # Sluthastigheten är den mest restriktiva
 
-        # ── Time integration
+        # ── Tidintegrering
+        # t = s / v_avg
         dt = np.where(
             (v[:-1] + v[1:]) > 0,
             2 * ds[:-1] / (v[:-1] + v[1:]),
@@ -152,25 +167,24 @@ class LapSimulator:
         t_total = float(np.sum(dt))
         t_cum = np.concatenate([[0], np.cumsum(dt)])
 
-        # ── Accelerations
+        # ── Telemetriberäkning
         a_long = np.gradient(v, s)
         a_lat = v ** 2 * kappa
 
-        # ── Energy (simplified)
-        # Positive work = drive energy consumed
-        # Negative work (braking) → regen if electric
-        power = np.zeros(n)
+        # ── Energiförbrukning
         energy_drive_j = 0.0
         energy_regen_j = 0.0
 
         for i in range(1, n):
             v_avg = 0.5 * (v[i - 1] + v[i])
+            # Räkna bara energi vid acceleration
             f_drive = max(car.max_traction_n(v_avg) * (v[i] > v[i - 1]), 0)
+            # Räkna regen vid inbromsning (om elektrisk)
             f_brake_active = car.max_brake_force_n * (v[i] < v[i - 1])
-            work_drive = f_drive * ds[i - 1]
-            work_regen = f_brake_active * ds[i - 1] * car.regen_efficiency if car.electric else 0.0
-            energy_drive_j += work_drive
-            energy_regen_j += work_regen
+            
+            energy_drive_j += f_drive * ds[i - 1]
+            if car.electric:
+                energy_regen_j += f_brake_active * ds[i - 1] * car.regen_efficiency
 
         energy_net_kwh = (energy_drive_j - energy_regen_j) / 3.6e6
 
@@ -190,7 +204,7 @@ class LapSimulator:
         }
 
 
-# ── REPORT ───────────────────────────────────────────────────────────────────
+# ── RAPPORT ──────────────────────────────────────────────────────────────────
 
 def print_report(result: dict, car: VehicleParams) -> None:
     lap = result["lap_time_s"]
@@ -199,21 +213,21 @@ def print_report(result: dict, car: VehicleParams) -> None:
 
     print()
     print("=" * 52)
-    print("  FS LAP SIMULATION RESULT")
+    print("  FS LAP SIMULATION RESULTAT")
     print("=" * 52)
-    print(f"  Lap time          {mins}:{secs:06.3f}")
-    print(f"  Track length      {result['track_length_m']:.1f} m")
+    print(f"  Varvtid           {mins}:{secs:06.3f}")
+    print(f"  Banlängd          {result['track_length_m']:.1f} m")
     print(f"  v_max             {result['v_max_ms'] * 3.6:.1f} km/h")
     print(f"  v_avg             {result['v_avg_ms'] * 3.6:.1f} km/h")
-    print(f"  Energy (net)      {result['energy_net_kwh']:.3f} kWh")
-    print(f"  SoC remaining     {100*(car.battery_capacity_kwh - result['energy_net_kwh'])/car.battery_capacity_kwh:.1f}%")
-    print(f"  Points simulated  {result['n_points']}")
+    print(f"  Energi (netto)    {result['energy_net_kwh']:.3f} kWh")
+    print(f"  SoC kvar          {100*(car.battery_capacity_kwh - result['energy_net_kwh'])/car.battery_capacity_kwh:.1f}%")
+    print(f"  Simulerade punkter {result['n_points']}")
     print("=" * 52)
     print()
 
 
 def export_telemetry(result: dict, path: str) -> None:
-    """Export point-by-point telemetry as CSV."""
+    """Exportera telemetri punkt-för-punkt som CSV."""
     import csv
     n = result["n_points"]
     with open(path, "w", newline="") as f:
@@ -229,20 +243,20 @@ def export_telemetry(result: dict, path: str) -> None:
                 round(result["a_long"][i], 4),
                 round(result["a_lat"][i], 4),
             ])
-    print(f"  Telemetry → {path}")
+    print(f"  Telemetri → {path}")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="FS Lap Time Simulator")
-    parser.add_argument("--track", default="fsg", help="Track: fsg|oval|figure8|skidpad or path/to/track.csv")
-    parser.add_argument("--car", default=None, help="Path to car JSON config (optional)")
-    parser.add_argument("--export", default=None, help="Export telemetry to CSV path")
-    parser.add_argument("--laps", type=int, default=1, help="Number of laps to simulate")
+    parser.add_argument("--track", default="fsg", help="Bana: fsg|oval|figure8|skidpad eller sökväg/till/bana.csv")
+    parser.add_argument("--car", default=None, help="Sökväg till bil-konfiguration (JSON)")
+    parser.add_argument("--export", default=None, help="Exportera telemetri till CSV")
+    parser.add_argument("--laps", type=int, default=1, help="Antal varv att simulera")
     args = parser.parse_args()
 
-    # Load car
+    # Ladda bil
     car = VehicleParams()
     if args.car:
         with open(args.car) as f:
@@ -251,13 +265,13 @@ def main():
             if hasattr(car, k):
                 setattr(car, k, v)
 
-    # Load track
+    # Ladda bana
     if Path(args.track).exists():
         x, y = load_track_csv(args.track)
     else:
         x, y = generate_track(args.track)
 
-    print(f"\n  Track: {args.track}  |  Car: {car.mass_kg} kg  |  Peak: {car.peak_power_kw} kW")
+    print(f"\n  Bana: {args.track}  |  Bil: {car.mass_kg} kg  |  Toppeffekt: {car.peak_power_kw} kW")
 
     t0 = time.perf_counter()
     sim = LapSimulator(car)
@@ -265,14 +279,14 @@ def main():
     elapsed = time.perf_counter() - t0
 
     print_report(result, car)
-    print(f"  Simulation time   {elapsed*1000:.1f} ms")
+    print(f"  Simuleringstid    {elapsed*1000:.1f} ms")
 
     if args.export:
         export_telemetry(result, args.export)
 
     if args.laps > 1:
-        print(f"\n  {args.laps}-lap projection: {result['lap_time_s'] * args.laps / 60:.2f} min")
-        print(f"  Energy projection: {result['energy_net_kwh'] * args.laps:.3f} kWh")
+        print(f"\n  {args.laps}-varvs projektion: {result['lap_time_s'] * args.laps / 60:.2f} min")
+        print(f"  Energiprojektion: {result['energy_net_kwh'] * args.laps:.3f} kWh")
 
 
 if __name__ == "__main__":

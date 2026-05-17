@@ -30,5 +30,11 @@ python src/sensitivity.py --sweep all
 3. Kör en "forward pass" (acceleration) och en "backward pass" (bromsning).
 4. Integrerar `dt = ds / v` för att få total varvtid och telemetri.
 
+## Framtida förbättringar & Reflektion
+Detta projekt har gett mig en djupare förståelse för hur små designval (som t.ex. 10 kg viktminskning vs 0.2 ökning i Cl) faktiskt påverkar prestandan på banan. Nästa steg för simulatorn är:
+- **Avancerade däckmodeller:** Implementera Pacejka 5.2 för att bättre simulera kombinerat grepp (lateral + longitudinal).
+- **Drivlinemodellering:** Lägga till specifika vridmomentkurvor för elmotorer och termisk simulering av batteriet.
+- **3D-Bana:** Hantera höjdskillnader (gradienter) för att simulera banor som t.ex. Red Bull Ring mer exakt.
+
 ---
 Oscar Enghag · Datateknik LTH
