@@ -118,28 +118,30 @@ class LapSimulator:
 
         v_limit = self.v_corner_max(kappa)
 
-        # ── Forward pass (acceleration limited)
+        # ── Forward pass (Acceleration: Beräkna maxfart utifrån grepp och effekt)
         v = np.zeros(n)
-        v[0] = min(v_limit[0], 5.0)
+        v[0] = min(v_limit[0], 5.0)  # Startfart (t.ex. från stillastående)
 
         for i in range(1, n):
             seg = ds[i - 1]
-            f_drive = car.max_traction_n(v[i - 1])
-            f_drag = car.drag_n(v[i - 1])
+            f_drive = car.max_traction_n(v[i - 1]) # Drivkraft begränsad av motor/däck
+            f_drag = car.drag_n(v[i - 1])           # Luftmotstånd
             f_net = f_drive - f_drag
-            a = f_net / car.mass_kg
+            a = f_net / car.mass_kg                 # F = ma => a = F/m
+            # Beräkna ny fart via v^2 = u^2 + 2as
             v_new = np.sqrt(max(v[i - 1] ** 2 + 2 * a * seg, 0.01))
-            v[i] = min(v_new, v_limit[i])
+            v[i] = min(v_new, v_limit[i])           # Begränsa till kurvtagningsförmåga
 
-        # ── Backward pass (braking limited)
+        # ── Backward pass (Braking: Justera farten bakåt för att klara inbromsningar)
         for i in range(n - 2, -1, -1):
             seg = ds[i]
-            f_brake = car.max_brake_force_n
-            f_drag = car.drag_n(v[i + 1])
+            f_brake = car.max_brake_force_n         # Max bromskraft
+            f_drag = car.drag_n(v[i + 1])           # Luftmotstånd hjälper till vid inbromsning
             f_net_brake = f_brake + f_drag
             a_brake = f_net_brake / car.mass_kg
+            # Beräkna tänkbar ingångsfart inför nästa punkt
             v_back = np.sqrt(max(v[i + 1] ** 2 + 2 * a_brake * seg, 0.01))
-            v[i] = min(v[i], v_back, v_limit[i])
+            v[i] = min(v[i], v_back, v_limit[i])    # Välj lägsta farten för säkerhet
 
         # ── Time integration
         dt = np.where(

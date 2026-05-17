@@ -105,17 +105,22 @@ class VehicleParams:
         return self.peak_power_kw * 1000
 
     def downforce_n(self, v_ms: float) -> float:
-        rho = 1.225  # kg/m³ standard air
+        """Beräkna aerodynamisk marktryck (downforce) vid hastighet v."""
+        rho = 1.225  # kg/m³ standard luftdensitet
         return 0.5 * rho * v_ms ** 2 * self.cl * self.aero_ref_area_m2
 
     def drag_n(self, v_ms: float) -> float:
+        """Beräkna luftmotstånd vid hastighet v."""
         rho = 1.225
         return 0.5 * rho * v_ms ** 2 * self.cd * self.aero_ref_area_m2
 
     def max_traction_n(self, v_ms: float) -> float:
-        """Max drive force limited by tires and power."""
+        """Maximal drivkraft begränsad av antingen däckens grepp eller motorns effekt."""
+        # Totalt vertikalt tryck = Vikt + Downforce
         fz_total = self.weight_n + self.downforce_n(v_ms)
+        # Greppgräns: Friktion * Normalkraft
         f_tire = fz_total * self.tire.mu_x() * self.drivetrain_efficiency
+        # Effektgräns: Kraft = Effekt / Hastighet (P = Fv)
         f_power = self.max_power_w / max(v_ms, 0.5)
         return min(f_tire, f_power)
 
